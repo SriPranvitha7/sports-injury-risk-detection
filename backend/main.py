@@ -54,3 +54,27 @@ def login(user: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token({"sub": user.email, "role": db_user["role"]})
     return {"access_token": token, "token_type": "bearer", "role": db_user["role"]}
+
+class AthleteProfile(BaseModel):
+    username: str
+    sport_type: str
+    position: str
+    age: int
+    height_cm: float
+    weight_kg: float
+    injury_history: str
+    training_load: str
+
+athlete_profiles_db = {}
+
+@app.post("/athlete/profile")
+def create_athlete_profile(profile: AthleteProfile):
+    athlete_profiles_db[profile.username] = profile.dict()
+    return {"message": "Athlete profile created successfully", "data": profile}
+
+@app.get("/athlete/profile/{username}")
+def get_athlete_profile(username: str):
+    profile = athlete_profiles_db.get(username)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Athlete not found")
+    return profile

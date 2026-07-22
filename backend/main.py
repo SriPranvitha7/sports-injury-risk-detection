@@ -1,3 +1,10 @@
+import os
+import uuid
+from fastapi import UploadFile, File
+from video_processor import check_video_quality, process_video
+from risk_analyzer import analyze_risk
+from biomechanics_report import generate_full_report
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -78,3 +85,99 @@ def get_athlete_profile(username: str):
     if not profile:
         raise HTTPException(status_code=404, detail="Athlete not found")
     return profile
+
+# Folder to save uploaded videos
+UPLOAD_FOLDER = "uploaded_videos"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Temporary storage for analysis results
+analysis_results_db = {}
+
+@app.post("/video/upload")
+async def upload_video(file: UploadFile = File(...)):
+    """
+    Receives a video file from the frontend.
+    Validates the format.
+    Saves it to the server.
+    Returns a video ID for tracking.
+    """
+    # Check file format
+    allowed_formats = ["video/mp4", "video/quicktime", "video/x-msvideo"]
+    if file.content_type not in allowed_formats:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file format. Please upload MP4, MOV, or AVI."
+        )
+
+    # Generate unique ID for this video
+    video_id = str(uuid.uuid4())[:8]
+    filename = f"{video_id}_{file.filename}"
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+
+    # Save the file
+    with open(file_path, "wb") as buffer:
+        content = await file.read()
+        buffer.write(content)
+
+    return {
+        "message": "Video uploaded successfully",
+        "video_id": video_id,
+        "filename": filename
+    }
+
+
+@app.post("/video/analyze/{video_id}")
+def analyze_video(video_id: str):
+    """
+    Finds the uploaded video.
+    Checks quality.
+    Runs pose estimation and risk analysis.
+    Stores results.
+    """
+    # Find the video file
+    video_file = None
+    for f in os.listdir(UPLOAD_FOLDER):
+        if f.startswith(video_id):
+            video_file = f
+            break
+
+    if not video_file:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_path  = os.path.join(UPLOAD_FOLDER, video_file)
+    output_path = os.path.join(UPLOAD_FOLDER, f"processed_{video_file}")
+
+    # Step 1 — Check video quality
+    quality_ok, quality_message = check_video_quality(video_path)
+    if not quality_ok:
+        raise HTTPException(status_code=400, detail=quality_message)
+
+    # Step 2 — Process video (OpenCV + MediaPipe + NumPy)
+    df = process_video(video_path, output_path)
+
+    # Step 3 — Analyze risk (Scikit-learn + XGBoost logic)
+    risk_report = analyze_risk(df)
+
+    # Step 4 — Generate full report with charts
+    full_report = generate_full_report(df, risk_report)
+
+    # Store results
+    analysis_results_db[video_id] = full_report
+
+    return {
+        "message": "Analysis complete",
+        "video_id": video_id,
+        "risk_category": full_report["summary"]["risk_category"],
+        "overall_risk_score": full_report["summary"]["overall_risk_score"]
+    }
+
+
+@app.get("/video/results/{video_id}")
+def get_results(video_id: str):
+    """
+    Returns the full analysis report for a video.
+    """
+    if video_id not in analysis_results_db:
+        raise HTTPException(status_code=404, detail="Results not found. Please analyze the video first.")
+
+    return analysis_results_db[video_id]
